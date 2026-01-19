@@ -46,11 +46,39 @@ func LoginHandler(c *gin.Context) {
 		return
 	}
 
-	token, _ := GenerateToken(user.ID, user.Role)
+	token, err := GenerateToken(user.ID, user.Role)
+	if err != nil {
+		response.Error(c, 500, "Token generation failed", err.Error())
+		return
+	}
+
+	// 🔐 Set JWT as HTTP-only cookie
+	c.SetCookie(
+		"access_token", // name
+		token,          // value
+		86400,          // maxAge (1 day)
+		"/",            // path
+		"",             // domain (empty = current)
+		false,          // secure (true in prod with HTTPS)
+		true,           // httpOnly
+	)
 
 	response.Success(c, "Login successful", gin.H{
 		"user_id": user.ID,
 		"role":    user.Role,
-		"token":   token,
 	})
+}
+
+func LogoutHandler(c *gin.Context) {
+	c.SetCookie(
+		"access_token",
+		"",
+		-1, // delete cookie
+		"/",
+		"",
+		false,
+		true,
+	)
+
+	response.Success(c, "Logged out successfully", nil)
 }

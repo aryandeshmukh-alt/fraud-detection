@@ -1,8 +1,6 @@
 package middleware
 
 import (
-	"strings"
-
 	"fraud-detection-backend/internal/config"
 	"fraud-detection-backend/pkg/response"
 
@@ -12,14 +10,13 @@ import (
 
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		auth := c.GetHeader("Authorization")
-		if auth == "" {
-			response.Error(c, 401, "Unauthorized", "Missing token")
+		tokenStr, err := c.Cookie("access_token")
+		if err != nil {
+			response.Error(c, 401, "Unauthorized", "Missing auth cookie")
 			c.Abort()
 			return
 		}
 
-		tokenStr := strings.Replace(auth, "Bearer ", "", 1)
 		token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
 			return []byte(config.AppConfig.JWTSecret), nil
 		})
