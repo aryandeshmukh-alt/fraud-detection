@@ -32,7 +32,7 @@ func CreateTransactionNotification(
 		return err
 	}
 
-	return Create(n)
+	return nil // ✅ DO NOT insert again
 }
 
 func FetchUserNotifications(userID string, limit, offset int) ([]Notification, error) {

@@ -30,6 +30,7 @@ func CreateTransaction(userID string, amount float64, currency, deviceID, locati
 		TransactionID: txn.ID,
 		UserID:        txn.UserID,
 		Amount:        txn.Amount,
+		DeviceID:      txn.DeviceID,
 	})
 
 	return txn, nil

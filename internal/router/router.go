@@ -28,12 +28,16 @@ func SetupRouter() *gin.Engine {
 
 	// -------- Protected User Routes --------
 	protected := r.Group("/")
-	protected.Use(middleware.AuthMiddleware())
+	protected.Use(
+		middleware.AuthMiddleware(),
+		middleware.DeviceMiddleware(), // 🔥 ADD THIS
+	)
 	{
 		protected.GET("/protected/me", func(c *gin.Context) {
 			response.Success(c, "Authenticated user", gin.H{
-				"user_id": c.GetString("user_id"),
-				"role":    c.GetString("role"),
+				"user_id":   c.GetString("user_id"),
+				"role":      c.GetString("role"),
+				"device_id": c.GetString("device_id"),
 			})
 		})
 
@@ -49,6 +53,7 @@ func SetupRouter() *gin.Engine {
 	adminGroup := r.Group("/admin")
 	adminGroup.Use(
 		middleware.AuthMiddleware(),
+		middleware.DeviceMiddleware(),
 		middleware.RequireRole("ADMIN"),
 	)
 	{

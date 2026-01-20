@@ -10,6 +10,7 @@ type TransactionEvent struct {
 	TransactionID string  `json:"transaction_id"`
 	UserID        string  `json:"user_id"`
 	Amount        float64 `json:"amount"`
+	DeviceID      string  `json:"device_id"`
 }
 
 func PublishTransactionCreated(event TransactionEvent) error {

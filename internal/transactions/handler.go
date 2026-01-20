@@ -10,7 +10,6 @@ func CreateTransactionHandler(c *gin.Context) {
 	var req struct {
 		Amount   float64 `json:"amount"`
 		Currency string  `json:"currency"`
-		DeviceID string  `json:"device_id"`
 		Location string  `json:"location"`
 	}
 
@@ -20,12 +19,13 @@ func CreateTransactionHandler(c *gin.Context) {
 	}
 
 	userID := c.GetString("user_id")
+	deviceID := c.GetString("device_id")
 
 	txn, err := CreateTransaction(
 		userID,
 		req.Amount,
 		req.Currency,
-		req.DeviceID,
+		deviceID,
 		req.Location,
 	)
 
