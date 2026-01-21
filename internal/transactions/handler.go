@@ -2,15 +2,17 @@ package transactions
 
 import (
 	"fraud-detection-backend/pkg/response"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
 
 func CreateTransactionHandler(c *gin.Context) {
 	var req struct {
-		Amount   float64 `json:"amount"`
-		Currency string  `json:"currency"`
-		Location string  `json:"location"`
+		Amount        float64 `json:"amount" binding:"required"`
+		Currency      string  `json:"currency" binding:"required"`
+		Location      string  `json:"location" binding:"required"`
+		PaymentMethod string  `json:"payment_method" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -18,8 +20,16 @@ func CreateTransactionHandler(c *gin.Context) {
 		return
 	}
 
+	// 🔐 Derived from JWT
 	userID := c.GetString("user_id")
+
+	// 📱 Derived from DeviceMiddleware
 	deviceID := c.GetString("device_id")
+
+	if deviceID == "" {
+		response.Error(c, 500, "Device not detected", "device_id missing in context")
+		return
+	}
 
 	txn, err := CreateTransaction(
 		userID,
@@ -27,6 +37,7 @@ func CreateTransactionHandler(c *gin.Context) {
 		req.Currency,
 		deviceID,
 		req.Location,
+		req.PaymentMethod,
 	)
 
 	if err != nil {
@@ -35,4 +46,19 @@ func CreateTransactionHandler(c *gin.Context) {
 	}
 
 	response.Success(c, "Transaction created", txn)
+}
+
+func GetTransactionHistoryHandler(c *gin.Context) {
+	userID := c.GetString("user_id")
+
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+
+	txns, err := FetchTransactionHistory(userID, limit, offset)
+	if err != nil {
+		response.Error(c, 500, "Failed to fetch transactions", err.Error())
+		return
+	}
+
+	response.Success(c, "Transaction history fetched", txns)
 }

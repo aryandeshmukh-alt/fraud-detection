@@ -42,7 +42,7 @@ func SetupRouter() *gin.Engine {
 		})
 
 		protected.POST("/transactions", transactions.CreateTransactionHandler)
-
+		protected.GET("/transactions/history", transactions.GetTransactionHistoryHandler)
 		protected.GET("/notifications", notifications.GetNotificationsHandler)
 		protected.GET("/notifications/unread-count", notifications.GetUnreadCountHandler)
 		protected.PATCH("/notifications/:id/read", notifications.MarkNotificationReadHandler)

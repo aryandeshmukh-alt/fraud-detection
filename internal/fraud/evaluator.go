@@ -12,6 +12,9 @@ import (
 	"fraud-detection-backend/internal/notifications"
 )
 
+/*
+txnSnapshot holds only the data needed to judge a transaction.
+*/
 type txnSnapshot struct {
 	ID        string
 	UserID    string
@@ -20,11 +23,30 @@ type txnSnapshot struct {
 	CreatedAt time.Time
 }
 
+/*
+userStats represents the user's usual spending pattern.
+AvgAmount = 0 means the user has no past successful transactions.
+*/
+type userStats struct {
+	AvgAmount float64
+}
+
+/*
+EvaluateTransaction runs asynchronously after a transaction is created.
+
+Design decision:
+- Each user has one primary trusted device
+- New devices are NEVER auto-trusted
+- Any transaction from a different device increases risk
+*/
 func EvaluateTransaction(txnID string) {
+
+	log.Println("Fraud evaluation started for transaction:", txnID)
+
+	// ------------------------------------------------
+	// Load transaction
+	// ------------------------------------------------
 	var txn txnSnapshot
-
-	log.Println("🧠 Fraud evaluation started for txn:", txnID)
-
 	if err := database.DB.
 		Table("transactions").
 		Where("id = ?", txnID).
@@ -32,74 +54,140 @@ func EvaluateTransaction(txnID string) {
 		return
 	}
 
-	risk := 0
-	var rules []string
+	riskScore := 0
+	var triggeredRules []string
 
-	// ---------- LARGE AMOUNT ----------
-	if txn.Amount > 50000 {
-		risk += 40
-		rules = append(rules, LargeAmountRule)
+	// ------------------------------------------------
+	// Load user spending baseline
+	// ------------------------------------------------
+	var stats userStats
+	database.DB.
+		Table("user_transaction_stats").
+		Select("avg_amount").
+		Where("user_id = ?", txn.UserID).
+		First(&stats)
+
+	// =================================================
+	// RULE 1: First transaction safety check
+	// =================================================
+	// If we don't know the user yet and the first transaction
+	// itself is very large, we add risk.
+	if stats.AvgAmount == 0 && txn.Amount > 100000 {
+		riskScore += 30
+		triggeredRules = append(triggeredRules, "FIRST_TRANSACTION_HIGH_AMOUNT")
 	}
 
-	// ---------- RAPID TRANSACTIONS (TEST MODE) ----------
-	var txnCount int64
+	// =================================================
+	// RULE 2: Amount deviation
+	// =================================================
+	if stats.AvgAmount > 0 {
+
+		switch {
+		case txn.Amount >= stats.AvgAmount*10:
+			riskScore += 40
+			triggeredRules = append(triggeredRules, "AMOUNT_DEVIATION_HIGH")
+
+		case txn.Amount >= stats.AvgAmount*5:
+			riskScore += 30
+			triggeredRules = append(triggeredRules, "AMOUNT_DEVIATION_MEDIUM")
+
+		case txn.Amount >= stats.AvgAmount*2:
+			riskScore += 20
+			triggeredRules = append(triggeredRules, "AMOUNT_DEVIATION_LOW")
+		}
+	}
+
+	// =================================================
+	// RULE 3: Velocity (amount-aware)
+	// =================================================
+	var recentTxnCount int64
+
 	database.DB.
 		Table("transactions").
 		Where(
 			"user_id = ? AND created_at > ?",
 			txn.UserID,
-			time.Now().Add(-30*time.Second),
+			time.Now().Add(-1*time.Minute),
 		).
-		Count(&txnCount)
+		Count(&recentTxnCount)
 
-	if txnCount >= 2 {
-		risk += 30
-		rules = append(rules, RapidTxnRule)
+	if txn.Amount >= 1000 && txn.Amount < 10000 && recentTxnCount >= 4 {
+		riskScore += 20
+		triggeredRules = append(triggeredRules, "RAPID_MEDIUM_AMOUNT")
 	}
 
-	// ---------- NEW DEVICE ----------
-	var deviceCount int64
+	if txn.Amount >= 10000 && txn.Amount < 50000 && recentTxnCount >= 3 {
+		riskScore += 30
+		triggeredRules = append(triggeredRules, "RAPID_LARGE_AMOUNT")
+	}
+
+	if txn.Amount >= 50000 && recentTxnCount >= 2 {
+		riskScore += 40
+		triggeredRules = append(triggeredRules, "RAPID_VERY_LARGE_AMOUNT")
+	}
+
+	// =================================================
+	// RULE 4: Device mismatch check
+	// =================================================
+	// We trust ONLY the first device used by the user.
+	// Any other device always adds risk.
+	var trustedDevice string
+
 	database.DB.
 		Table("devices").
-		Where("device_id = ?", txn.DeviceID).
-		Count(&deviceCount)
+		Select("device_id").
+		Where("user_id = ?", txn.UserID).
+		Limit(1).
+		Scan(&trustedDevice)
 
-	if deviceCount == 0 {
-		risk += 20
-		rules = append(rules, NewDeviceRule)
+	if trustedDevice != "" && trustedDevice != txn.DeviceID {
+		riskScore += 30
+		triggeredRules = append(triggeredRules, "UNTRUSTED_DEVICE")
 	}
 
-	// ---------- SAVE FRAUD EVALUATION ----------
+	// =================================================
+	// RULE 5: Missing device guard
+	// =================================================
+	if txn.DeviceID == "" {
+		riskScore += 50
+		triggeredRules = append(triggeredRules, "MISSING_DEVICE_ID")
+	}
+
+	// ------------------------------------------------
+	// Save fraud evaluation
+	// ------------------------------------------------
 	database.DB.Table("fraud_evaluations").Create(map[string]interface{}{
 		"id":              uuid.NewString(),
 		"transaction_id":  txn.ID,
-		"risk_score":      risk,
-		"rules_triggered": strings.Join(rules, ","),
+		"risk_score":      riskScore,
+		"rules_triggered": strings.Join(triggeredRules, ","),
 		"created_at":      time.Now(),
 	})
 
-	// ---------- DECISION ----------
+	// =================================================
+	// Decision
+	// =================================================
 	status := "SUCCESS"
 	event := "TRANSACTION_ALLOWED"
 
-	if risk >= 30 && risk <= 70 {
+	if riskScore >= 30 && riskScore <= 70 {
 		status = "FLAGGED"
 		event = "TRANSACTION_FLAGGED"
-	} else if risk > 70 {
+	} else if riskScore > 70 {
 		status = "BLOCKED"
 		event = "TRANSACTION_BLOCKED"
 	}
 
-	log.Println("📢 Creating notification for status:", status)
-
-	// ---------------- Notifications ----------------
+	// =================================================
+	// Notifications
+	// =================================================
 	if status == "FLAGGED" {
 		notifications.CreateTransactionNotification(
 			txn.UserID,
 			txn.ID,
 			"TXN_FLAGGED",
 			"Transaction Flagged",
-			"Your transaction was flagged due to suspicious activity.",
+			"Your transaction was flagged due to unusual activity.",
 		)
 	}
 
@@ -109,35 +197,61 @@ func EvaluateTransaction(txnID string) {
 			txn.ID,
 			"TXN_BLOCKED",
 			"Transaction Blocked",
-			"Your transaction was blocked due to high risk activity.",
+			"Your transaction was blocked due to high risk.",
 		)
 	}
 
-	database.DB.Table("transactions").
+	// ------------------------------------------------
+	// Update transaction
+	// ------------------------------------------------
+	database.DB.
+		Table("transactions").
 		Where("id = ?", txn.ID).
 		Updates(map[string]interface{}{
 			"status":     status,
-			"risk_score": risk,
+			"risk_score": riskScore,
 		})
 
-	// ---------- AUDIT ----------
+	// =================================================
+	// Audit log
+	// =================================================
 	audit.CreateLog(&audit.AuditLog{
 		ID:          uuid.NewString(),
 		EventType:   event,
 		EntityType:  "TRANSACTION",
 		EntityID:    txn.ID,
-		Description: "Rules triggered: " + strings.Join(rules, ","),
+		Description: "Triggered rules: " + strings.Join(triggeredRules, ","),
 		CreatedAt:   time.Now(),
 	})
 
-	// ---------- DEVICE LEARNING ----------
-	// Device learning ONLY for safe transactions
-	if deviceCount == 0 && status == "SUCCESS" {
+	// =================================================
+	// Learn behavior ONLY on success
+	// =================================================
+	if status == "SUCCESS" {
+
+		database.DB.Exec(`
+			INSERT INTO user_transaction_stats (user_id, total_txns, total_amount, avg_amount)
+			VALUES (?, 1, ?, ?)
+			ON CONFLICT (user_id)
+			DO UPDATE SET
+				total_txns = user_transaction_stats.total_txns + 1,
+				total_amount = user_transaction_stats.total_amount + EXCLUDED.total_amount,
+				avg_amount =
+					(user_transaction_stats.total_amount + EXCLUDED.total_amount)
+					/ (user_transaction_stats.total_txns + 1),
+				last_updated = NOW()
+		`, txn.UserID, txn.Amount, txn.Amount)
+	}
+
+	// =================================================
+	// Store PRIMARY device only once
+	// =================================================
+	// We store device only if user has no device yet.
+	if status == "SUCCESS" && trustedDevice == "" {
 		database.DB.Table("devices").Create(map[string]interface{}{
-			"device_id":  txn.DeviceID,
 			"user_id":    txn.UserID,
+			"device_id":  txn.DeviceID,
 			"first_seen": time.Now(),
 		})
 	}
-
 }
