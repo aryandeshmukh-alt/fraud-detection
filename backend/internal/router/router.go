@@ -13,6 +13,8 @@ import (
 
 func SetupRouter() *gin.Engine {
 	r := gin.New()
+
+	r.Use(middleware.CORSMiddleware())
 	r.Use(middleware.RequestLogger())
 	r.Use(gin.Recovery())
 
